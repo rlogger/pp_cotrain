@@ -1,172 +1,124 @@
-# Self-check quiz — pp_cotrain
+# Self-check quiz — baseline + OA-IQL
 
-Work through these **without looking at the code or guide**. Target: >80% correct before presenting. Answers and pointers at the bottom.
-
----
-
-## Section A — the research problem (conceptual)
-
-**A1.** Why does AlphaZero-style self-play *not* apply to our predator-prey setup? Give two specific reasons.
-
-**A2.** Name the failure mode of using behavior cloning to model a learning opponent.
-
-**A3.** What is the latent variable our proposed method estimates about the opponent, and why is that choice better than estimating their policy directly?
-
-**A4.** What does "asymmetric" mean in this context? Give two specific asymmetries in `simple_tag_v3`.
-
-**A5.** Classify each with M (model-free) / B (model-based): (a) AlphaZero, (b) stock IQL, (c) MuZero, (d) EfficientZero, (e) our proposed method, (f) our current baseline.
+Work through these without looking at code or guide. Answers at bottom. Target: >80 % before the demo.
 
 ---
 
-## Section B — the environment
+## A. The setup
 
-**B1.** In `MPE_simple_tag_v3`, how many predators, how many prey, how many landmarks?
+**A1.** How many predators and how many prey in `simple_tag_v3`? Action dim per agent?
 
-**B2.** What is the action space dimension for each agent?
+**A2.** Give two asymmetries between the predator and prey sides.
 
-**B3.** Obs dim for predator vs prey — and *why* are they different?
+**A3.** What does a single "capture event" pay out to each team?
 
-**B4.** What is the reward a **predator team** gets for a single capture event? (Careful: not the reward one predator gets.)
-
-**B5.** Is the prey allowed to leave the arena? What happens if it does?
-
-**B6.** What's the max speed of prey vs predator, and what's the ratio?
+**A4.** Why is γ = 0.9 appropriate for this env?
 
 ---
 
-## Section C — architecture and training
+## B. Baseline IQL
 
-**C1.** In stock JaxMARL `iql_rnn.py`, how many Q-networks are there across the 4 agents? What's the consequence for adversarial tasks?
+**B1.** In stock JaxMARL `iql_rnn.py`, how many Q-networks exist across the 4 agents? What's the consequence for adversarial tasks?
 
-**C2.** In `iql_teams.py`, how many Q-networks, and how is their use split?
+**B2.** In `iql_teams.py`, how many Q-networks? How are they split?
 
-**C3.** Name three things that are duplicated per-team in `iql_teams.py`.
+**B3.** What is duplicated per-team? What is shared across teams?
 
-**C4.** What's shared across teams (not duplicated)?
-
-**C5.** Why share parameters within the predator team but not across teams?
-
-**C6.** At learn time, we sample one minibatch and then... describe what happens next in 1–2 sentences.
-
-**C7.** What does `CTRolloutManager` do to the observations before they enter the network?
-
-**C8.** Describe the role of the agent-ID one-hot in the observation.
+**B4.** Why share within the predator team?
 
 ---
 
-## Section D — hyperparameters
+## C. OA-IQL architecture
 
-**D1.** With `TOTAL_TIMESTEPS=2e6, NUM_STEPS=26, NUM_ENVS=8`, how many update steps does training run?
+**C1.** What does the OA-IQL Q-network output, beyond the Q-values?
 
-**D2.** What does `LEARNING_STARTS=10000` actually *do*?
+**C2.** For the **predator** network (3 agents), what's the shape of the opponent-action head output (per agent, per step)?
 
-**D3.** What does `TAU=1.0` mean for target-network updates? How does that differ from `TAU=0.005`?
+**C3.** For the **prey** network (1 agent), what's the shape of the opponent-action head output?
 
-**D4.** What fraction of training is spent with high exploration (ε > 0.1)? (Hint: `EPS_DECAY=0.1`, `EPS_FINISH=0.05`.)
+**C4.** What is `OPP_AUX_COEF` and what does it control? What happens at 0? At 10?
 
-**D5.** Why is `GAMMA=0.9` appropriate for this env? Reference the episode length in your answer.
+**C5.** Is the opponent head used at inference time?
 
----
-
-## Section E — results (must know specific numbers)
-
-**E1.** Training wall-clock on M4 Pro CPU for 2M timesteps?
-
-**E2.** Final greedy-eval predator return per 30-step episode?
-
-**E3.** Final greedy-eval prey return per 30-step episode?
-
-**E4.** Predator return improvement from first to last eval (multiplicative)?
-
-**E5.** Predator return peaks around update \_\_\_\_ at value \_\_\_\_ , then settles around \_\_\_\_ by the end.
-
-**E6.** Converged Q-values are about \_\_\_\_ for pred and \_\_\_\_ for prey.
-
-**E7.** In the seed-7 rollout, how many captures occurred in 60 steps?
-
-**E8.** Why doesn't the predator return monotonically increase?
+**C6.** Does the Bellman target change in OA-IQL?
 
 ---
 
-## Section F — gotchas / debugging
+## D. Results — numbers
 
-**F1.** Why did I need to downgrade flax from 0.10.4 to 0.10.2?
+**D1.** Final greedy pred return: baseline vs OA-IQL?
 
-**F2.** Describe the int32/float32 reward-dtype bug in one sentence — *where* it originates and *how* I fixed it.
+**D2.** Final greedy prey return: baseline vs OA-IQL?
 
-**F3.** Why did setting `REW_SCALE=1.0` (rather than `1`) trigger the bug?
+**D3.** Peak pred return during training: baseline vs OA-IQL?
 
-**F4.** What's the consequence of not fixing the dtype bug — does training silently degrade or does it hard-fail?
+**D4.** Asymptotic opponent-action prediction accuracy for each team?
+
+**D5.** Wall-clock cost of adding OA?
 
 ---
 
-## Section G — positioning the work
+## E. Interpretation
 
-**G1.** In one sentence each: what does the baseline *show*, and what does it *not* claim?
+**E1.** "OA-IQL beats baseline." True or false? Defend your answer.
 
-**G2.** Name two axes on which our proposed method should beat this baseline.
+**E2.** Why does pred peak higher with OA-IQL but settle lower?
 
-**G3.** If the PI says "train MAPPO instead" — give a principled reason to stay with IQL for the baseline.
+**E3.** Why is the equilibrium shift *towards prey* rather than pred?
 
-**G4.** If asked "what's next?", give a specific two-track plan.
+**E4.** What would happen if `OPP_AUX_COEF` were scaled to 10?
 
-**G5.** What would happen to this IQL baseline if the arena geometry changed at test time?
+**E5.** You observe opp-action accuracy plateaued at 0.22 throughout training. What does that tell you?
+
+---
+
+## F. What's next
+
+**F1.** Propose a modification that would make OA-IQL benefit pred instead of prey.
+
+**F2.** How would you move from OA-IQL to a planning-based method using the opp-head?
+
+**F3.** What would OA-IQL with opponent-reward prediction (instead of opponent-action) buy you?
 
 ---
 
 ## Answers
 
-### Section A
-- **A1.** (a) The task is *asymmetric*: predator and prey have different action dynamics, speeds, and reward structures — self-play requires role symmetry. (b) The rules are *not* of a turn-based game; it's simultaneous-move continuous-state. Self-play assumes a closed-form game model with known rules (Go, chess). Also acceptable: non-zero-sum components in the reward (boundary penalty for prey only).
-- **A2.** BC fits a model of the opponent's actions. If the opponent is still learning, the BC target moves under you — you're forever one step behind. Guide §1, §7.
-- **A3.** The opponent's **reward function**. Rewards are the underlying objective that drives behavior, so they're more invariant to policy changes than the policy itself is. Guide §8.
-- **A4.** Asymmetric = teams have *different* dynamics / rewards / obs. Examples: prey is 30% faster (1.3 vs 1.0); prey obs = 14 dims vs predator 16; prey pays −10 plus boundary penalty, predators earn +10 per collision *each*; only prey can leave the arena.
-- **A5.** (a) B (b) M (c) B (d) B (e) B (hybrid: model-based planner + model-free bootstrap) (f) M.
+### A
+- **A1.** 3 pred, 1 prey. Action dim = 5 (no-op, 4 cardinal).
+- **A2.** Speed (pred 1.0 vs prey 1.3), obs dim (pred 16 vs prey 14), reward (pred +10/capture per agent, prey −10 + smooth boundary penalty), boundary (only prey can leave arena).
+- **A3.** Pred team: +30 (each of 3 preds gets +10). Prey: −10, plus `map_bounds_reward` if it's out.
+- **A4.** Episodes are 25 steps; γ²⁵ ≈ 0.07 means rewards beyond horizon are already discounted out. γ = 0.99 would weight phantom post-episode value.
 
-### Section B
-- **B1.** 3 predators, 1 prey, 2 landmarks. `simple_tag.py:14-16`.
-- **B2.** 5 (no-op + 4 cardinal directions).
-- **B3.** 16 for predator (includes prey velocity), 14 for prey (omits predator velocity). Prey has strictly less information — a baked-in asymmetry.
-- **B4.** +30. Each of the 3 predators gets +10 independently, and the "team reward" is the sum.
-- **B5.** Yes, but it incurs `map_bounds_reward` — a smooth penalty. Most of the prey's training improvement (−247 → −49) is learning to stay in.
-- **B6.** Prey max 1.3, predator max 1.0. Ratio 1.3×. Guide §2.
+### B
+- **B1.** One Q-net, shared across all 4 agents via `vmap(..., in_axes=(None, 0, 0, 0))`. In adversarial tasks, pred and prey gradients update the same weights in opposite directions — they cancel.
+- **B2.** Two. One shared across the 3 predators; one for the lone prey.
+- **B3.** Per-team: `TrainState`, online params, target params, optimizer state, loss computation. Shared: replay buffer, ε-schedule, rollout env.
+- **B4.** The 3 predators are interchangeable — same role, same reward. Sharing cuts sample complexity ~3× and is standard in cooperative MARL (VDN, MAPPO, QMIX all share within-team).
 
-### Section C
-- **C1.** One Q-network, shared across all 4 agents via `vmap(..., in_axes=(None, 0, 0, 0))`. For adversarial tasks, predator and prey gradients conflict on the same parameters. Guide §3.
-- **C2.** Two networks: one for the 3 predators (shared within team), one for the lone prey.
-- **C3.** `TrainState`, target-network params, optimizer state. Also: two losses per learn step, two `apply_gradients` calls, two target-update checks. Guide §4 table.
-- **C4.** The flashbax buffer (stores all-agent trajectories), the ε-greedy schedule, the rollout env.
-- **C5.** Within team, agents are interchangeable (same role, same reward) — sharing cuts sample complexity ~3×. Across teams they have opposite rewards — sharing would produce conflicting gradients. Guide §4.
-- **C6.** Split the minibatch by agent name into per-team tensors; run each team's network forward through its own target to compute the TD target; compute team-local MSE loss; apply gradients independently.
-- **C7.** Pads obs to the max agent's obs dim (16), then appends a 4-dim agent-ID one-hot → 20-dim uniform obs. Guide §2, §6.
-- **C8.** Lets the shared (within-team) network distinguish between homogeneous team members — so the same network can produce different outputs for "predator 0" vs "predator 2" if state asymmetries demand.
+### C
+- **C1.** An auxiliary head of logits over the opponent team's actions. Shape `(opp_n_agents, action_dim)`.
+- **C2.** Each predator outputs a **(1, 5)** prediction over the single prey's action.
+- **C3.** The prey outputs **(3, 5)** — three independent 5-way distributions, one per predator.
+- **C4.** The weight on the auxiliary cross-entropy loss. At 0: OA-IQL reduces exactly to baseline (aux head still exists but gets no gradient). At 10: aux loss dominates, Q-learning breaks, returns tank.
+- **C5.** No. Eval uses only the Q-head. The opp-head is training-time only.
+- **C6.** No. `L = L_Q + 0.5 · L_opp`. Bellman target is unchanged. The aux loss only reshapes the shared trunk's representation.
 
-### Section D
-- **D1.** 2e6 / 26 / 8 = **9615** updates.
-- **D2.** For the first 10 000 env steps (= 10000 / 8 ≈ 1250 rollouts), no gradient updates happen. The buffer fills with random-policy transitions so the first Bellman targets aren't computed on a tiny or biased sample.
-- **D3.** `TAU=1.0` = **hard target update**: every `TARGET_UPDATE_INTERVAL` updates, copy online params → target params exactly. `TAU=0.005` would be Polyak (soft) averaging — target = 0.005 × online + 0.995 × target per update.
-- **D4.** ε starts at 1.0 and decays linearly to 0.05 over `EPS_DECAY × NUM_UPDATES = 0.1 × 9615 ≈ 962` updates. After that, ε stays at 0.05. So ~10% of training has non-trivial exploration; the remaining 90% is ε=0.05.
-- **D5.** Episodes are 25 steps. γ=0.9 → γ^25 ≈ 0.07 → rewards beyond the episode horizon are essentially discounted out. γ=0.99 would weight phantom post-episode rewards that don't exist.
+### D
+- **D1.** Baseline **+33.12**; OA-IQL **+24.69**. Δ = −8.44.
+- **D2.** Baseline **−49.05**; OA-IQL **−37.78**. Δ = +11.27.
+- **D3.** Baseline ≈ +103 at update 2000; OA-IQL ≈ +144 at update 2000.
+- **D4.** Both teams asymptote around 0.57 (random baseline is 0.20).
+- **D5.** 150 s → 158 s (+5 %). Throughput drops from ~13 300 to ~12 650 env-steps/s.
 
-### Section E
-- **E1.** **150 seconds**.
-- **E2.** **+33.125** per 30-step episode.
-- **E3.** **−49.05** per 30-step episode.
-- **E4.** 14.375 → 33.125 = **~2.3×** (or +130%).
-- **E5.** Peaks ~**update 2000** at **~+5**, settles around **~+1.5** by the end.
-- **E6.** **+5 pred, −5 prey** (symmetric).
-- **E7.** **5 captures in 60 steps** (predator avg team reward 2.5/step × 60 steps = 150 / 30-per-capture).
-- **E8.** Because prey is also learning. After pred initially gets good at chasing, prey's gradients get a sharp learning signal and it starts evading — pred return drops back. The plateau around ±2 is the co-adaptation equilibrium. Guide §6.
+### E
+- **E1.** False. OA-IQL shifts the equilibrium toward prey. Pred loses 8 return points, prey gains 11. The *sum* is +3 — the prey gain outweighs the pred loss, but neither side strictly improves. This is a nuanced result, not a uniform win.
+- **E2.** Sample efficiency vs equilibrium: the opp-aware trunk gives pred a sharper early-training signal (faster credit assignment), so its Q-values climb faster and peak higher. But prey is *also* getting the aux-loss benefit, and prey benefits more, so eventually prey's improved policy pulls pred's return back down.
+- **E3.** Information asymmetry. Prey predicts 3 actors × 5 actions = 15 dof; pred predicts 1 actor × 5 actions = 5 dof. The prey's aux task is harder but richer, and once it solves that task, it has more information to condition evasion on.
+- **E4.** Aux loss dominates. Trunk would optimize for opp-prediction; Q-values would stay noisy; returns would collapse. Classic degenerate-aux-task failure.
+- **E5.** Either (a) the opponent's policy is near-random (ε very high, or policy is stuck at init), or (b) the trunk capacity is too small to learn opp dynamics, or (c) `OPP_AUX_COEF` is too low relative to Q-loss scale. Inspect Q-loss first; if that's fine, raise the aux coef.
 
-### Section F
-- **F1.** JaxMARL pins `jax<=0.4.38` but does not pin flax. Default flax 0.10.4 uses `jax.api_util.debug_info`, introduced in jax 0.5. 0.10.2 is the last flax that works with jax 0.4.38.
-- **F2.** `simple_tag.py` line 163 computes adversary reward as `10 * jnp.sum(collisions)` → int32. Prey reward is int + float boundary → float32. The flashbax buffer was initialized from a no-REW_SCALE sample trajectory (int32), but the real rollout path multiplies by `REW_SCALE=1.0` (float) → promotes to float32 → dtype mismatch on `buffer.add`. Fix: `.astype(jnp.float32)` on rewards in both paths (`src/iql_teams.py:201, 269-272`).
-- **F3.** In Python, `1 * int32_array = int32_array` but `1.0 * int32_array = float32_array`. So using an int constant would have left dtypes matching by accident.
-- **F4.** Hard-fail. `chex.assert_trees_all_equal_dtypes` raises `AssertionError: types: float32 != int32` on the first `buffer.add` after `LEARNING_STARTS`.
-
-### Section G
-- **G1.** *Shows*: independent-Q learners can co-train stably on an asymmetric adversarial task, with clear co-adaptation dynamics. *Does not claim*: sample efficiency, opponent modeling, transfer, robustness to env changes, or centralized-critic benefits — all of which are target improvements for the proposed method.
-- **G2.** Sample efficiency (should match IQL performance in far fewer env steps); transfer (when arena geometry changes, planner with env-physics model should adapt immediately — IQL must retrain).
-- **G3.** MAPPO changes the value-function architecture entirely. With IQL, any improvement in the proposed method is attributable to opponent-reward modeling, not to "better credit assignment via centralized critic". Baseline's job is to isolate variables.
-- **G4.** (1) BIRL-based opponent-reward estimator (small reward MLP / GP, trained on observed opponent trajectories with BIRL loss). (2) MCTS planner that rolls out trajectories under the estimated opponent reward; use the IQL Q-network as leaf-node value estimator.
-- **G5.** It would have to retrain from scratch. The policy has baked in the current obstacle layout as raw observations; it has no explicit model of arena physics to transfer. That's precisely where the proposed method should shine.
+### F
+- **F1.** Asymmetric aux weights: `OPP_AUX_COEF_PRED = 0.5, OPP_AUX_COEF_PREY = 0.0` — pred gets the benefit, prey stays baseline. Or: train pred with OA against a baseline prey (exploiter setup).
+- **F2.** Use the opp-head at action-selection: for each candidate self-action a, sample k opponent-actions from the opp-head's posterior, evaluate `Q(s, a)` conditioned on those, pick the a that maximizes robust-min or expected value. That's 1-step planning with a learned model. Extend to MCTS for multi-step lookahead.
+- **F3.** A reward model is more policy-invariant — as the opponent's policy shifts during co-training, a reward model stays closer to a fixed target (the opponent's objective). That's the core of inverse-RL. Trade-off: rewards carry less bit-rate than actions (often sparse) and harder to train supervised. OA-IQL is the cheap-fast version; OR-IQL (opponent-reward) is the slower-but-stabler version.

@@ -1,152 +1,161 @@
-# Technical Guide — pp_cotrain
+# Technical guide — baseline IQL + Opponent-Aware IQL
 
-A self-contained walkthrough of **what was built**, **why**, and **how it works**, with specific line references and numbers from the actual 2M-step run.
+This repo trains two variants of two-team independent Q-learning on MPE `simple_tag_v3` (3 predators vs 1 prey) and compares them A/B:
 
----
+1. **Baseline IQL** (`src/iql_teams.py`) — each team has its own Q-network, optimized against its own rewards. No explicit opponent modeling.
+2. **Opponent-Aware IQL / OA-IQL** (`src/iql_teams_oa.py`) — same as above, plus an auxiliary head on each Q-network that predicts the opponent team's actions from the current observation. Trained with a joint loss:
 
-## 1. The problem
+    `L_total = L_Q  +  OPP_AUX_COEF · CrossEntropy(opp_action_pred, opp_action_true)`
 
-Adversarial multi-agent RL in an **asymmetric** setting: 3 predators vs 1 prey. Unlike zero-sum symmetric games (Chess, Go), self-play is not applicable — the two teams have different state spaces, different action dynamics, and different reward functions. Each team's optimal policy depends on the opponent's policy, which is *also* changing. This is the non-stationarity that our paper targets with **model-based co-training**: each team learns a model of the *opponent's reward/objective* and feeds it to a planner.
-
-This repo is the **model-free co-training baseline** the proposed method will be compared against.
-
----
-
-## 2. The environment — MPE `simple_tag_v3`
-
-| field | value | source |
-|---|---|---|
-| agents | `adversary_0/1/2` + `agent_0` | `JaxMARL/jaxmarl/environments/mpe/simple_tag.py:28-30` |
-| predator radius / accel / max-speed | 0.075 / 3.0 / 1.0 | `simple_tag.py:51,58,64` |
-| prey radius / accel / max-speed | 0.05 / 4.0 / 1.3 | `simple_tag.py:52,59,65` |
-| landmarks (obstacles) | 2, radius 0.2 | `simple_tag.py:53,66` |
-| obs dim | 16 (adversary), 14 (prey) | `simple_tag.py:36,39` |
-| action space | Discrete(5): {no-op, N, S, E, W} | default `action_type=DISCRETE_ACT` |
-| predator reward | `+10 × #collisions_with_prey` per predator | `simple_tag.py:163` |
-| prey reward | `-10 × #collisions − boundary_penalty` | `simple_tag.py:157-160` |
-| episode length | 25 steps (default MPE) | `mpe/default_params.py` |
-
-Key asymmetries:
-- **Speed**: prey is 30% faster (1.3 vs 1.0). Predators must coordinate to corner it.
-- **Rewards**: each predator independently earns +10 per collision (so a single capture yields +30 to the team). Prey pays −10 for being caught, plus a smooth `map_bounds_reward` penalty for leaving the [-1, 1]² arena.
-- **Observation**: different dimensionalities; the `CTRolloutManager` wrapper pads obs to the max (16) and appends a 4-dim agent-id one-hot, yielding a uniform **20-dim observation** for every network forward.
+The auxiliary loss forces the shared trunk (dense → GRU) to encode opponent-relevant features. The Q-head then reads Q-values off a representation that is already opponent-aware — no change to the Bellman target.
 
 ---
 
-## 3. Why the stock JaxMARL IQL is wrong for this task
+## 1. Why MPE simple_tag
 
-`JaxMARL/baselines/QLearning/iql_rnn.py` instantiates **one** `RNNQNetwork` and **one** `TrainState`, then `jax.vmap`s it across the agent dimension with `in_axes=(None, 0, 0, 0)` (see `iql_rnn.py:263-264, 356`). `None` on `params` means **the same parameters are shared across every agent, both teams**.
+- 3 **predators** (speed 1.0) chase 1 **prey** (speed 1.3, 30% faster).
+- Discrete actions per agent: `[no-op, up, down, left, right]`.
+- Reward: per capture, each predator gets +10 (team +30); prey gets −10 plus a smooth `map_bounds_reward` penalty if it leaves the arena.
+- Episode length: 25 steps (fixed horizon).
+- Asymmetric: different speeds, different obs sizes (pred 16, prey 14), different reward structures.
 
-In a cooperative task (e.g. `simple_spread`) that's fine — all agents minimize the same loss. In an adversarial task:
-
-- predator transitions contribute gradients that **increase** the Q of `chase_prey` actions,
-- prey transitions contribute gradients that **decrease** the Q of `be_chased` actions,
-- they share the same network → **directly conflicting gradients on the same parameters**.
-
-You end up training a confused Q-function that predicts neither team's return well. The first thing I did was read that script carefully to confirm this — not a bug, just the wrong architecture for our setting.
+This is the smallest environment that is simultaneously discrete-action, continuous-state, and adversarial — so iteration is fast (2 M env-steps in ~2.5 min on CPU).
 
 ---
 
-## 4. What `src/iql_teams.py` does differently
+## 2. Baseline IQL (two-team fork)
 
-Two independent IQL learners, trained simultaneously:
+Stock JaxMARL `iql_rnn.py` shares a **single** Q-network across all 4 agents:
 
-| component | per-team | notes |
-|---|---|---|
-| `RNNQNetwork` | 1 each (`pred`, `prey`) | shared params **within** a team (the 3 predators share one net); `src/iql_teams.py:161-168` |
-| `CustomTrainState` | 1 each | each carries its own params + target + optimizer state; `src/iql_teams.py:186-194` |
-| flashbax trajectory buffer | 1 shared | buffer stores all-agent trajectories; teams split the minibatch by agent name at learn time; `src/iql_teams.py:206-216` |
-| target network | 1 each, hard update every 200 updates (`TAU=1.0`) | `src/iql_teams.py:312-326` |
-| ε-greedy exploration | shared schedule, independent action sampling per team | `src/iql_teams.py:218-238` |
-| loss | team-local: `(r_team + γ (1−d) Q_target_team) − Q_team)²` | `src/iql_teams.py:255-290` |
-
-Team split is by agent-name prefix (`src/iql_teams.py:99-105`): `adversary_*` → `pred`, `agent_*` → `prey`. So the 3 predators share a single `RNNQNetwork`, vmapped across the team dimension, while the lone prey has its own network.
-
-### Why share params within team but not across teams?
-- **Within** team: predators are interchangeable — same role, same reward, same action space. Parameter sharing cuts sample complexity by 3× and has a long track record in cooperative MARL.
-- **Across** teams: predator and prey have different roles, different rewards, and (logically) different Q-functions. Sharing here is what breaks stock IQL.
-
-### The data flow at one update
-```
-rollout (26 steps × 8 envs)
-    → Timestep {obs, actions, rewards, dones, avail_actions}  (keys = agent names)
-    → shared flashbax buffer
-      (sample: 32 trajectories × 1 time-chunk)
-    → split minibatch by team
-      → pred: stack 3 adversary agents → (3, time, batch, 20)
-      → prey: stack 1 good agent     → (1, time, batch, 20)
-    → two independent TD losses, two independent .apply_gradients()
-    → hard target update every 200 updates
+```python
+jax.vmap(net.apply, in_axes=(None, 0, 0, 0))(params, hs, obs, dones)
+#                              ^^^^  "None" shares params across agents
 ```
 
----
+Fine for cooperative tasks; broken for adversarial ones — predator gradients (maximize capture) and prey gradients (minimize capture) both update the same weights, cancelling.
 
-## 5. Hyperparameters — what they do and why
+Our fix: split into two `TrainState`s, two Q-networks, two target networks, shared replay buffer (split per-team at loss time). See `src/iql_teams.py:99-105` for the team split and `:186-194` for per-team init.
 
-All in `configs/alg/ql_teams_simple_tag.yaml`. The numbers match the JaxMARL MPE defaults (`JaxMARL/baselines/QLearning/config/alg/ql_rnn_mpe.yaml`) except where noted.
-
-| key | value | meaning |
-|---|---|---|
-| `TOTAL_TIMESTEPS` | 2 000 000 | env steps |
-| `NUM_ENVS` | 8 | parallel envs (vectorized) |
-| `NUM_STEPS` | 26 | steps per rollout; one update consumes `26×8=208` env transitions |
-| `NUM_UPDATES` | 9615 | derived: `TOTAL_TIMESTEPS / NUM_STEPS / NUM_ENVS` |
-| `BUFFER_SIZE` | 5000 | trajectories in flashbax buffer |
-| `BUFFER_BATCH_SIZE` | 32 | sampled per learn step |
-| `HIDDEN_SIZE` | 64 | GRU hidden + embedding |
-| `EPS_START / EPS_FINISH / EPS_DECAY` | 1.0 → 0.05 over 10% of updates (≈962 updates) | exploration schedule |
-| `LR` | 0.005 | with linear decay to 1e-10 (`LR_LINEAR_DECAY=True`) |
-| `GAMMA` | 0.9 | short horizon — MPE eps are 25 steps, 0.9^25 ≈ 0.07 |
-| `MAX_GRAD_NORM` | 25 | clip |
-| `TARGET_UPDATE_INTERVAL` | 200 | every 200 updates |
-| `TAU` | 1.0 | hard target update (`τ=1` means copy, not Polyak) |
-| `LEARNING_STARTS` | 10 000 | timesteps of random exploration before learning |
-| `TEST_NUM_ENVS` | 128 | greedy eval envs |
+Within the predator team, the 3 agents share params (same role, same reward). A 4-dim agent-ID one-hot appended by `CTRolloutManager` gives them distinguishing identity inside a shared obs.
 
 ---
 
-## 6. What the results show (specific numbers from the run)
+## 3. Opponent-Aware IQL
 
-All from `logs/MPE_simple_tag_v3/iql_teams_MPE_simple_tag_v3_seed0_metrics.npz`.
+### Architecture change
 
-### Test-time greedy returns (TEST_NUM_ENVS=128, TEST_NUM_STEPS=30)
-| team | first eval | last eval |
-|---|---|---|
-| `pred` | +14.375 | **+33.125** |
-| `prey` | −247.46 | **−49.05** |
+The Q-network grows from one head to two:
 
-A capture event yields +10 per predator = +30 total. Last-eval pred return of +33 per 30-step rollout ≈ **1.1 captures per rollout** (once exploration is off). Prey's −49 is the sum of −10 per capture and the boundary penalty; the massive improvement from −247 → −49 is the prey learning to **stop running into walls**.
+```
+Dense(64) → ReLU → GRU(64) ─┬─ Dense(action_dim)                = Q-values
+                             └─ Dense(opp_n_agents * action_dim) = opp-action logits
+```
 
-### Training curves (`plots/train_curves.png`)
-- Updates 0–2000: predators discover chasing → pred return peaks at **~+5**, prey troughs at **~−8**. This is the "predators figured it out first" phase.
-- Updates 2000–4000: prey catches up, starts evading. Pred return drops from +5 to ~+1.4, prey recovers from −8 to ~−2.
-- Updates 4000–9615: both settle into a noisy equilibrium around ±2. **This is the co-training signature you want to show.**
+- For the **predator network** (3 shared-param agents), each predator outputs a 5-way distribution over the single prey's action.
+- For the **prey network** (1 agent), it outputs three 5-way distributions — one per predator.
 
-### Q-values (`plots/loss_q.png`)
-Converge to **+5 for predator, −5 for prey** — symmetric around zero. With `GAMMA=0.9` and ~1 capture per 25-step episode, Q values of ±5 are consistent with a discounted expected return of about `γ^n_steps_to_capture × 30 ≈ 5` for predators.
+See `src/iql_teams_oa.py:71-95` (`RNNQOppNetwork`).
 
-### TD loss
-Both teams: early spike to ~10 during the policy churn phase (updates 1500–3000), then monotonic decline to ~4. No divergence, no collapse. Clean Bellman regression.
+### Loss change
 
-### Rollout (`plots/rollout.gif`, seed 7)
-60 greedy steps. Average **predator team reward 2.5 / step** = 150 total over 60 steps = **5 capture events**, one every ~12 steps. Prey reward is **−0.68 / step** (−10/capture plus boundary).
+At learn time, the minibatch already contains all agents' actions, so the opponent target is free:
 
-### Wall-clock
-**150 seconds** for 2M timesteps on an Apple M4 Pro CPU via JAX. ≈ 13 300 env-steps/second. Roughly 624 updates/second, 1300 gradient steps/second (2 team losses per update).
+```python
+_opp_actions = batchify_team(minibatch.actions, opp_ags)   # (opp_n, B, T)
+# opp_logits: (team_n, B, T, opp_n, action_dim)
+ce   = -take_along_axis(log_softmax(opp_logits), opp_tgt).mean()
+loss = q_loss + 0.5 * ce           # OPP_AUX_COEF = 0.5 by default
+```
+
+`OPP_AUX_COEF = 0.5` is set in `configs/alg/ql_teams_oa_simple_tag.yaml`. The Bellman target and target-network update are untouched — only the trunk gets an extra gradient path.
+
+### What this buys you
+
+- **Representation learning**: the trunk is forced to encode "where is the prey likely to go next" (or, for prey, "which of the three predators is about to charge me").
+- **Zero inference cost**: at eval time you just run the Q-head as before. The opponent head is discarded (though you could use it — see §6).
+- **Drop-in compatibility**: same buffer, same optimizer, same ε-schedule, same eval loop. The only changes are the network's second head and the loss.
 
 ---
 
-## 7. Gotchas I hit
+## 4. Results from the 2 M-step run
 
-- **Flax ↔ JAX version mismatch.** JaxMARL pins `jax<=0.4.38` but leaves `flax` unpinned. `pip install` pulls flax 0.10.4, which imports `jax.api_util.debug_info` (doesn't exist until jax 0.5). Fix: `pip install "flax==0.10.2"`. See `README.md`.
-- **int32 / float32 rewards.** `simple_tag.py` computes adversary rewards as `10 * jnp.sum(collisions)` — int scalar × int-cast bool sum → int32. The prey reward is int + float (boundary penalty) → float32. If you set `REW_SCALE=1.0` (float) the multiplication promotes adversary rewards to float32; the flashbax buffer was initialized from a random-policy sample trajectory (no REW_SCALE), so its stored dtype was int32 for adversaries. On the first real `.add` after learning starts, chex fails with `types: float32 != int32`. Fix: cast rewards to float32 explicitly in both the sample path (`src/iql_teams.py:201`) and the real rollout (`src/iql_teams.py:269-272`).
+Both variants trained for 2 000 000 env-steps, 1 seed, on M4 Pro CPU.
+
+| metric | baseline IQL | OA-IQL | Δ |
+|---|---|---|---|
+| wall-clock | 150 s | 158 s | +5 % |
+| throughput | 13 300 env-steps/s | 12 650 env-steps/s | −5 % |
+| final pred greedy return (30-step ep) | **+33.12** | **+24.69** | −8.44 |
+| final prey greedy return (30-step ep) | **−49.05** | **−37.78** | +11.27 |
+| pred test-return peak | ~+103 @ update 2000 | **~+144 @ update 2000** | +41 |
+| opp-action accuracy (pred head) | — | **~0.57** (asymptote) | — |
+| opp-action accuracy (prey head) | — | **~0.57** (asymptote) | — |
+| random-guess accuracy | 0.20 | 0.20 | — |
+
+### The three-phase story
+
+1. **Exploration → co-adaptation (0–2000 updates)**. Both variants follow the same trajectory: predators figure out chasing, prey is still learning boundaries.
+2. **Peak divergence (updates ~2000)**. OA-IQL predators *peak significantly higher* than baseline (+144 vs +103). This is the sample-efficiency story: opponent modeling accelerates the pred's initial policy improvement.
+3. **Equilibrium shift (updates 4000–9615)**. Prey catches up. By the end, **OA-IQL prey is +11 better than baseline prey, and OA-IQL pred is −8 worse than baseline pred**. The opponent-modeling benefit is asymmetric: predicting 3 predators (prey's task) gives more exploitable information than predicting 1 prey (pred's task), and in a zero-sum-like co-training loop, the side with the stronger opponent model pulls the equilibrium its way.
+
+This is a nuanced result — honest rather than a clean "OA wins" claim. It's the right framing for adversarial MARL: symmetric changes have asymmetric effects.
 
 ---
 
-## 8. How this sets up the paper
+## 5. Opponent head as a diagnostic
 
-- **Model-free, independent-Q co-training** is the baseline curve. Our proposed method — BIRL-based opponent-reward estimation feeding an MCTS planner — should beat this on:
-  1. **Sample efficiency**: IQL here needs 2M steps. A planner with a learned opponent-reward model should match performance in far fewer interactions.
-  2. **Transfer**: if the map changes (e.g. obstacles move), stock IQL needs to retrain. A planner using a learned reward model + known physics should adapt immediately.
-  3. **Non-stationarity handling**: IQL implicitly assumes a stationary opponent; our method explicitly models the opponent's reward as something that *changes*.
-- What this baseline does **not** try to do: opponent modeling, partial observability handling, or explicit exploration beyond ε-greedy.
+The auxiliary accuracy curve (see `plots/compare_opp_modeling.png`) is a free training-time instrument:
+
+- Both teams climb from 20 % (random) to ~57 % by update 5000.
+- Pred's accuracy is briefly higher than prey's in the early phase, matching the early pred return peak — the pred trunk learns opponent dynamics faster.
+- Cross-entropy loss tracks the accuracy story: converges around 1.1 nats. Floor is bounded below by policy entropy of the opponent (still ε = 0.05 exploring).
+
+When this accuracy plateaus below ~0.35, training is stuck; when it climbs steadily, representation learning is happening.
+
+---
+
+## 6. Code references (if asked during demo)
+
+| thing | file : line |
+|---|---|
+| two-team split | `src/iql_teams.py:99-105` |
+| per-team train state init (baseline) | `src/iql_teams.py:186-194` |
+| per-team learn phase (baseline) | `src/iql_teams.py:254-290` |
+| **RNNQOppNetwork** (two-head Q-net) | `src/iql_teams_oa.py:71-95` |
+| **per-team learn with opp-aux loss** | `src/iql_teams_oa.py:241-310` |
+| opp-action CE + accuracy | `src/iql_teams_oa.py:269-294` |
+| auxiliary-loss weight | `configs/alg/ql_teams_oa_simple_tag.yaml:23` (`OPP_AUX_COEF: 0.5`) |
+| metrics split by team | `src/iql_teams_oa.py:369-378` |
+| stock IQL's shared-net wrong pattern | `JaxMARL/baselines/QLearning/iql_rnn.py:166-171, 263-264` |
+| simple_tag pred reward | `JaxMARL/jaxmarl/environments/mpe/simple_tag.py:163` |
+| simple_tag prey + boundary reward | `simple_tag.py:157-160` |
+| obs preprocessing (pad + ID one-hot) | `JaxMARL/jaxmarl/wrappers/baselines.py:328-335` |
+
+---
+
+## 7. Quick dtype gotcha (kept from baseline)
+
+`simple_tag.py:163` computes `adversary_reward = 10 * jnp.sum(collisions)` → int32, but prey reward (with smooth boundary penalty) is float32. Buffer-init traj is int32, rollout with `REW_SCALE = 1.0` becomes float32, and flashbax chokes with `types: float32 != int32` on the first `buffer.add`. Fix: explicit `.astype(jnp.float32)` on rewards in both sample and rollout paths. See `src/iql_teams.py:201, 269-272` (same pattern in `iql_teams_oa.py`).
+
+---
+
+## 8. Repro
+
+```bash
+conda activate pp_cotrain
+# baseline
+python src/iql_teams.py
+# opponent-aware
+python src/iql_teams_oa.py alg=ql_teams_oa_simple_tag
+# compare
+python src/compare_plots.py \
+  --baseline logs/MPE_simple_tag_v3/iql_teams_MPE_simple_tag_v3_seed0_metrics.npz \
+  --oa       logs/MPE_simple_tag_v3/iql_teams_oa_MPE_simple_tag_v3_seed0_metrics.npz
+# rollout GIF (OA)
+python src/visualize_rollout_oa.py \
+  --pred_params logs/MPE_simple_tag_v3/iql_teams_oa_MPE_simple_tag_v3_pred_seed0_vmap0.safetensors \
+  --prey_params logs/MPE_simple_tag_v3/iql_teams_oa_MPE_simple_tag_v3_prey_seed0_vmap0.safetensors \
+  --seed 7 --steps 60 --out plots/rollout_oa.gif
+```
+
+Both training runs finish in about 2.5 minutes. End-to-end reproduction including plots and GIFs is under 10 minutes on a MacBook.
