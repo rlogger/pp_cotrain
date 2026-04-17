@@ -3,9 +3,6 @@
 Two-team independent Q-learning on MPE `simple_tag_v3` (3 predators vs 1 prey), and an A/B against an **opponent-aware** variant (OA-IQL) that adds an auxiliary opponent-action prediction head.
 
 ---
-
-## The headline
-
 ![A/B test returns](plots/compare_test_returns.png)
 
 **OA-IQL does not uniformly beat baseline IQL. It shifts the equilibrium toward prey.**
