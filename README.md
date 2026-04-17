@@ -54,6 +54,14 @@ python src/visualize_rollout.py \
   --prey_params logs/MPE_simple_tag_v3/iql_teams_MPE_simple_tag_v3_prey_seed0_vmap0.safetensors
 ```
 
+## Docs
+
+- [`docs/01_guide.md`](docs/01_guide.md) — architecture, env details, hyperparams, results, and gotchas (with specific numbers and line refs)
+- [`docs/02_presentation.md`](docs/02_presentation.md) — 10-minute demo script with timings and exact phrasing
+- [`docs/03_qa.md`](docs/03_qa.md) — 17 anticipated PI/audience questions with short + detailed answers
+- [`docs/04_quiz.md`](docs/04_quiz.md) — 7-section self-check quiz (conceptual, env, architecture, hyperparams, results, debugging, positioning)
+- [`docs/05_cheatsheet.md`](docs/05_cheatsheet.md) — numbers table, MARL glossary, one-paragraph pitch, code line refs
+
 ## What a good demo shows
 
 - Predator team return climbs over training (more captures)
