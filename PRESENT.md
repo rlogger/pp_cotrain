@@ -1,10 +1,3 @@
-# How to present this — step by step
-
-A practical guide. Follow in order. Numbers in **bold** are ones you cannot flub.
-
----
-
-## 5 minutes before the demo
 
 - [ ] Terminal open at repo root: `cd ~/Documents/Projects/pp_cotrain`
 - [ ] `conda activate pp_cotrain` — confirm prompt shows the env
